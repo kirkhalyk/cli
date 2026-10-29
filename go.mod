@@ -53,6 +53,7 @@ require (
 	golang.org/x/crypto v0.58.0
 	golang.org/x/mod v0.43.0
 	golang.org/x/net v0.62.0
+	golang.org/x/oauth2 v0.34.0
 	golang.org/x/sync v0.25.0
 	golang.org/x/sys v0.50.0
 	golang.org/x/term v0.48.0
@@ -60,6 +61,7 @@ require (
 )
 
 require (
+	cloud.google.com/go/compute/metadata v0.9.0 // indirect
 	dario.cat/mergo v1.0.2 // indirect
 	github.com/Masterminds/semver/v3 v3.4.0 // indirect
 	github.com/Microsoft/go-winio v0.6.4 // indirect

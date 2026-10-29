@@ -13,6 +13,7 @@ import (
 
 	"github.com/entireio/cli/cmd/entire/cli"
 	"github.com/entireio/cli/cmd/entire/cli/api"
+	"github.com/entireio/cli/cmd/entire/cli/checkpoint/gcsmirror"
 	"github.com/entireio/cli/cmd/entire/cli/logging"
 	"github.com/entireio/cli/cmd/entire/cli/strategy"
 	"github.com/entireio/cli/cmd/entire/cli/versioninfo"
@@ -24,6 +25,12 @@ import (
 func main() {
 	// Resolve version/commit from build info before anything reads them.
 	versioninfo.Load()
+
+	// Prototype: register the GCS checkpoint mirror backend so
+	// checkpoints.mirrors[].type == "gcs" is selectable. See
+	// cmd/entire/cli/checkpoint/gcsmirror for what it does and why it is
+	// mirror-only.
+	gcsmirror.Register()
 
 	// Create context that cancels on interrupt
 	ctx, cancel := context.WithCancel(context.Background())
