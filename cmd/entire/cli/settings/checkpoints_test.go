@@ -185,3 +185,57 @@ func TestLoadCheckpointsConfig_LocalOverridesBase(t *testing.T) {
 	assert.Equal(t, "git", cfg.Primary.Type)
 	assert.Empty(t, cfg.Mirrors)
 }
+
+// DeveloperOwned gates off-machine mirrors (see checkpoint.RegisterOffMachine):
+// only the env override and an untracked settings.local.json may grant one.
+func TestLoadCheckpointsConfig_DeveloperOwned(t *testing.T) {
+	const block = `{"checkpoints": {"primary": {"type": "git-refs"}, "mirrors": [{"type": "gcs", "config": {"bucket": "b"}}]}}`
+
+	t.Run("version-controlled settings.json is not owned", func(t *testing.T) {
+		dir := newCheckpointsSettingsRepo(t)
+		ClearVersionedPathCache()
+		writeFile(t, dir, "settings.json", block)
+		cfg, err := LoadCheckpointsConfig(context.Background())
+		require.NoError(t, err)
+		require.NotNil(t, cfg)
+		assert.False(t, cfg.DeveloperOwned())
+	})
+
+	t.Run("untracked settings.local.json is owned", func(t *testing.T) {
+		dir := newCheckpointsSettingsRepo(t)
+		ClearVersionedPathCache()
+		writeFile(t, dir, "settings.local.json", block)
+		cfg, err := LoadCheckpointsConfig(context.Background())
+		require.NoError(t, err)
+		require.NotNil(t, cfg)
+		assert.True(t, cfg.DeveloperOwned())
+	})
+
+	t.Run("committed settings.local.json is not owned", func(t *testing.T) {
+		dir := newCheckpointsSettingsRepo(t)
+		ClearVersionedPathCache()
+		t.Cleanup(ClearVersionedPathCache)
+		writeFile(t, dir, "settings.local.json", block)
+		testutil.GitAdd(t, dir, ".entire/settings.local.json")
+		testutil.GitCommit(t, dir, "commit local settings")
+		cfg, err := LoadCheckpointsConfig(context.Background())
+		require.NoError(t, err)
+		require.NotNil(t, cfg)
+		assert.False(t, cfg.DeveloperOwned())
+	})
+
+	t.Run("env override is owned", func(t *testing.T) {
+		newCheckpointsSettingsRepo(t)
+		t.Setenv(EnvCheckpointsPrimary, "git-refs")
+		t.Setenv(EnvCheckpointsMirrors, "gcs")
+		cfg, err := LoadCheckpointsConfig(context.Background())
+		require.NoError(t, err)
+		require.NotNil(t, cfg)
+		assert.True(t, cfg.DeveloperOwned())
+	})
+
+	t.Run("nil config is not owned", func(t *testing.T) {
+		var cfg *CheckpointsConfig
+		assert.False(t, cfg.DeveloperOwned())
+	})
+}

@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 
 	"github.com/go-git/go-git/v6"
 
+	"github.com/entireio/cli/cmd/entire/cli/logging"
 	"github.com/entireio/cli/cmd/entire/cli/settings"
 )
 
@@ -204,20 +206,36 @@ func buildMirrors(ctx context.Context, env OpenEnv, cfg *settings.CheckpointsCon
 	seen := map[string]bool{primaryType: true}
 	mirrors := make([]Writer, 0, len(cfg.Mirrors))
 	for i, m := range cfg.Mirrors {
-		if _, err := lookupBackend(m.Type); err != nil {
+		backend, err := lookupBackend(m.Type)
+		if err != nil {
 			return nil, fmt.Errorf("checkpoints.mirrors[%d]: %w", i, err)
 		}
 		if seen[m.Type] {
 			return nil, fmt.Errorf("checkpoints.mirrors[%d]: backend type %q is already used by the primary or another mirror; each backend type may appear at most once", i, m.Type)
 		}
 		seen[m.Type] = true
+		// An off-machine mirror is a data-egress grant; honor it only from
+		// config this developer owns (see settings.CheckpointsConfig.DeveloperOwned).
+		if backend.offMachine && !cfg.DeveloperOwned() {
+			logging.Warn(ctx, "checkpoint mirror skipped: off-machine backends are honored only from .entire/settings.local.json (untracked) or ENTIRE_CHECKPOINTS_* env, not the version-controlled settings.json",
+				slog.Int("mirror_index", i), slog.String("type", m.Type))
+			continue
+		}
 		// Mirrors are best-effort write-only copies whose failures are logged
 		// and dropped; never pay on-demand ref-fetch network probes for them.
 		mirrorEnv := env
 		mirrorEnv.RefFetcher = nil
 		store, err := build(ctx, mirrorEnv, m.Type, m.Config)
 		if err != nil {
-			return nil, fmt.Errorf("checkpoints.mirrors[%d]: %w", i, err)
+			// Construction failures here are environmental (a teammate without
+			// the mirror's key or credentials, a fresh CI runner), not topology
+			// mistakes like the unknown/duplicate type above. A mirror is
+			// best-effort, so it must not take checkpoint.Open — and with it
+			// every checkpoint operation — down with it; drop it like a failed
+			// mirror write.
+			logging.Warn(ctx, "checkpoint mirror skipped: construction failed; primary unaffected",
+				slog.Int("mirror_index", i), slog.String("type", m.Type), slog.String("error", err.Error()))
+			continue
 		}
 		mirrors = append(mirrors, store)
 	}

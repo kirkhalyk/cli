@@ -1,3 +1,5 @@
+//go:build manual
+
 package gcsmirror
 
 import (
@@ -14,12 +16,16 @@ import (
 // TestManualEndToEndDemo is not part of the normal suite — it needs real
 // network access to the GCS API, which CI does not grant. Run with:
 //
-//	go test ./... -run TestManualEndToEndDemo -v -tags manual
+//	go test -tags manual ./cmd/entire/cli/checkpoint/gcsmirror -run TestManualEndToEndDemo -v
+//
+// The manual build tag keeps it out of `mise run test`: it reads the
+// developer's real Application Default Credentials and calls the live GCS API.
 //
 // It demonstrates (not asserts — the bucket in the demo config is
 // intentionally fake and no credentials are provided) that:
-//   - a "gcs" mirror in .entire/settings.json is resolved through the real
-//     registry (no "unknown checkpoint backend" error);
+//   - a "gcs" mirror in an untracked .entire/settings.local.json is resolved
+//     through the real registry (no "unknown checkpoint backend" error) and
+//     passes the off-machine trust gate;
 //   - the primary git-refs write still succeeds even though the mirror write
 //     fails (fanoutStore.Write's best-effort swallow).
 //
@@ -35,8 +41,10 @@ func TestManualEndToEndDemo(t *testing.T) {
 	dir := t.TempDir()
 	testutil.InitRepo(t, dir)
 	testutil.WriteFile(t, dir, "README.md", "# gcsmirror demo\n")
-	testutil.WriteFile(t, dir, ".entire/settings.json", `{
-  "enabled": true,
+	testutil.WriteFile(t, dir, ".entire/settings.json", `{"enabled": true}`)
+	// Off-machine mirrors are honored only from untracked local settings, so
+	// this file is written but deliberately never git-added.
+	testutil.WriteFile(t, dir, ".entire/settings.local.json", `{
   "checkpoints": {
     "primary": { "type": "git-refs" },
     "mirrors": [

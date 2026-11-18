@@ -60,14 +60,25 @@ type registeredBackend struct {
 	// one-of-each-type topology rule in buildMirrors, not by this flag (a
 	// git-backed backend can mirror alongside a different git-backed primary).
 	gitBacked bool
+	// offMachine reports whether the backend sends checkpoint data off this
+	// machine (e.g. to a cloud bucket) rather than into this repo or a local
+	// path. Such a backend is a data-egress grant, so buildMirrors only honors
+	// it from configuration the developer owns (env override or a verified
+	// untracked settings.local.json) — never from the version-controlled
+	// settings.json, where one JSON line in a pull request could redirect every
+	// teammate's transcripts to a bucket of the author's choosing.
+	offMachine bool
 }
 
 var (
 	registryMu sync.RWMutex
 	// registry maps backend type to its factory and capabilities. Git-backed
 	// backends are built in (registered here). Other backends add themselves
-	// through Register — in practice only test-only backends do, via their
-	// RegisterForTesting helpers, so a production binary can never select them.
+	// through Register / RegisterOffMachine: test-only backends via their
+	// RegisterForTesting helpers, and production mirror backends (currently
+	// gcsmirror) from cmd/entire/main.go. A production binary can therefore
+	// select a non-git backend, but only as a mirror (see gitBacked), and an
+	// off-machine one only from developer-owned config (see offMachine).
 	registry = map[string]registeredBackend{
 		BackendTypeGitBranch: {factory: gitBranchBackendFactory, gitBacked: true},
 		BackendTypeGitRefs:   {factory: gitRefsBackendFactory, gitBacked: true},
@@ -79,12 +90,23 @@ var (
 // Git-backed backends are built in and not registered through this path. It
 // panics on a duplicate type to surface wiring mistakes.
 func Register(typ string, f Factory) {
+	register(typ, registeredBackend{factory: f})
+}
+
+// RegisterOffMachine is Register for a backend that sends checkpoint data off
+// this machine (see registeredBackend.offMachine). Such a backend is only built
+// as a mirror when the checkpoints config came from a developer-owned source.
+func RegisterOffMachine(typ string, f Factory) {
+	register(typ, registeredBackend{factory: f, offMachine: true})
+}
+
+func register(typ string, b registeredBackend) {
 	registryMu.Lock()
 	defer registryMu.Unlock()
 	if _, exists := registry[typ]; exists {
 		panic(fmt.Sprintf("checkpoint: backend type %q already registered", typ))
 	}
-	registry[typ] = registeredBackend{factory: f, gitBacked: false}
+	registry[typ] = b
 }
 
 // lookupBackend returns the registered backend for typ, or a clear error

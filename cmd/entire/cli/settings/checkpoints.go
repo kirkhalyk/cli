@@ -35,6 +35,22 @@ const (
 type CheckpointsConfig struct {
 	Primary BackendConfig   `json:"primary"`
 	Mirrors []BackendConfig `json:"mirrors,omitempty"`
+
+	// developerOwned records that this config came from a source only this
+	// developer controls: the environment override, or a settings.local.json
+	// positively verified as untracked. See DeveloperOwned.
+	developerOwned bool
+}
+
+// DeveloperOwned reports whether the config came from a source this developer
+// controls rather than the version-controlled settings.json. The checkpoint
+// layer requires it before building a mirror that sends data off the machine:
+// like external_agents and the OPF command, that is a grant one JSON line in a
+// pull request must not be able to make on every teammate's behalf. An
+// unverifiable local file counts as not owned (fail closed), because being
+// wrong means uploading someone's transcripts to a stranger's bucket.
+func (c *CheckpointsConfig) DeveloperOwned() bool {
+	return c != nil && c.developerOwned
 }
 
 // BackendConfig is a discriminated backend selector: Type names the registered
@@ -69,6 +85,7 @@ func LoadCheckpointsConfig(ctx context.Context) (*CheckpointsConfig, error) {
 		if err := cfg.validate(); err != nil {
 			return nil, err
 		}
+		cfg.developerOwned = true
 		return cfg, nil
 	}
 
@@ -102,6 +119,11 @@ func LoadCheckpointsConfig(ctx context.Context) (*CheckpointsConfig, error) {
 	}
 	if err := cfg.validate(); err != nil {
 		return nil, err
+	}
+	// Only mirrors consult ownership, so the deep (index AND HEAD) probe is
+	// paid only by a local file that actually configures one.
+	if src == local && len(cfg.Mirrors) > 0 {
+		cfg.developerOwned = classifyLocalSettingsDeep(ctx, local) == localOwn
 	}
 	return &cfg, nil
 }

@@ -986,6 +986,25 @@ func (s *treeWriter) readSummaryFromBlob(hash plumbing.Hash) (*CheckpointSummary
 	return readJSONFromBlob[CheckpointSummary](s.repo, hash)
 }
 
+// ReadRedactedTranscriptFile is the TranscriptPath fallback shared by every
+// store: data read from disk is an untrusted source, so it runs through
+// sanitize → image drop → redact here. Sanitize comes BEFORE redacting, matching
+// the pipeline order everywhere else: redaction must not scan ciphertext that
+// sanitization is about to discard. This is the one path that reaches a store
+// with raw bytes. A missing or unreadable file is non-fatal (the transcript may
+// not exist yet) and yields empty bytes; only a redaction failure is an error.
+func ReadRedactedTranscriptFile(ctx context.Context, agentType types.AgentType, path string) (redact.RedactedBytes, error) {
+	rawData, err := agent.ReadTranscriptFile(path)
+	if err != nil || len(rawData) == 0 {
+		return redact.RedactedBytes{}, nil //nolint:nilerr // non-fatal by contract: transcript may not exist yet
+	}
+	redacted, err := redact.JSONLBytes(DropImagesIfEnabled(ctx, SanitizeTranscriptForAgentType(agentType, rawData)))
+	if err != nil {
+		return redact.RedactedBytes{}, fmt.Errorf("failed to redact transcript from file: %w", err)
+	}
+	return redacted, nil
+}
+
 // SanitizeTranscriptForAgentType strips what Entire must not keep from a transcript
 // about to be stored (see agent.TranscriptSanitizer). It exists for callers that work
 // from a types.AgentType rather than a live agent.Agent: the store itself, as a
@@ -1030,19 +1049,11 @@ func (s *treeWriter) writeTranscript(ctx context.Context, opts WriteOptions, ses
 	// so we redact it here. The in-memory path (opts.Transcript) is already
 	// pre-redacted by the caller — enforced by the RedactedBytes type.
 	if len(transcriptBytes) == 0 && opts.TranscriptPath != "" {
-		rawData, readErr := agent.ReadTranscriptFile(opts.TranscriptPath)
-		if readErr != nil {
-			// Non-fatal: transcript may not exist yet
-			rawData = nil
+		redacted, redactErr := ReadRedactedTranscriptFile(ctx, opts.Agent, opts.TranscriptPath)
+		if redactErr != nil {
+			return false, nil, nil, redactErr
 		}
-		if len(rawData) > 0 {
-			// Sanitize BEFORE redacting, matching the pipeline order everywhere else:
-			// redaction must not scan ciphertext that sanitization is about to
-			// discard. This is the one path that reaches the store with raw bytes.
-			redacted, redactErr := redact.JSONLBytes(DropImagesIfEnabled(ctx, SanitizeTranscriptForAgentType(opts.Agent, rawData)))
-			if redactErr != nil {
-				return false, nil, nil, fmt.Errorf("failed to redact transcript from file: %w", redactErr)
-			}
+		if redacted.Len() > 0 {
 			transcriptBytes, redaction = redacted.Bytes(), redacted.Counts()
 		}
 	}

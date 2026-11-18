@@ -3,10 +3,12 @@ package checkpoint
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/go-git/go-git/v6/plumbing"
@@ -15,6 +17,7 @@ import (
 
 	"github.com/entireio/cli/cmd/entire/cli/checkpoint/id"
 	"github.com/entireio/cli/cmd/entire/cli/paths"
+	"github.com/entireio/cli/cmd/entire/cli/settings"
 )
 
 const fakeMirrorBackendType = "faketest-mirror"
@@ -184,4 +187,76 @@ func TestOpen_ToleratesWholeFileSyntaxError(t *testing.T) {
 	// exposes the git AuthorReader capability.
 	_, isAuthor := stores.Persistent.(AuthorReader)
 	assert.True(t, isAuthor)
+}
+
+const (
+	fakeOffMachineBackendType = "faketest-offmachine"
+	fakeBrokenBackendType     = "faketest-broken"
+)
+
+var (
+	fakeGatedBackendsOnce  sync.Once
+	fakeOffMachineFactoryN atomic.Int32
+)
+
+// registerFakeGatedBackends registers an off-machine backend (counting factory
+// calls, so a test can tell whether buildMirrors reached it) and a backend whose
+// construction always fails, like a gcs mirror without its key or credentials.
+func registerFakeGatedBackends(t *testing.T) {
+	t.Helper()
+	fakeGatedBackendsOnce.Do(func() {
+		RegisterOffMachine(fakeOffMachineBackendType, func(_ context.Context, _ OpenEnv, _ json.RawMessage) (PersistentStore, error) {
+			fakeOffMachineFactoryN.Add(1)
+			return &fakePrimary{}, nil
+		})
+		Register(fakeBrokenBackendType, func(_ context.Context, _ OpenEnv, _ json.RawMessage) (PersistentStore, error) {
+			return nil, errors.New("encryption key env var is not set")
+		})
+	})
+}
+
+func writeRawLocalSettings(t *testing.T, dir, body string) {
+	t.Helper()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".entire"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, filepath.FromSlash(settings.EntireSettingsLocalFile)), []byte(body), 0o644))
+}
+
+// A mirror that cannot be constructed (missing key, no credentials) is dropped
+// best-effort; it must not fail Open and with it every checkpoint operation.
+func TestOpen_SkipsMirrorWhoseConstructionFails(t *testing.T) {
+	registerFakeGatedBackends(t)
+	dir, repo, _ := newTestRepo(t)
+	t.Chdir(dir)
+	writeRawSettings(t, dir, `{"enabled": true, "checkpoints": {"primary": {"type": "git-branch"}, "mirrors": [{"type": "`+fakeBrokenBackendType+`"}]}}`)
+
+	stores, err := Open(context.Background(), repo, OpenOptions{})
+	require.NoError(t, err)
+	require.NotNil(t, stores.Persistent)
+}
+
+// One JSON line in the version-controlled settings.json must not be able to
+// send every teammate's checkpoints off the machine.
+func TestOpen_OffMachineMirrorRefusedFromTrackedSettings(t *testing.T) {
+	registerFakeGatedBackends(t)
+	dir, repo, _ := newTestRepo(t)
+	t.Chdir(dir)
+	writeRawSettings(t, dir, `{"enabled": true, "checkpoints": {"primary": {"type": "git-branch"}, "mirrors": [{"type": "`+fakeOffMachineBackendType+`"}]}}`)
+
+	before := fakeOffMachineFactoryN.Load()
+	_, err := Open(context.Background(), repo, OpenOptions{})
+	require.NoError(t, err)
+	assert.Equal(t, before, fakeOffMachineFactoryN.Load(), "off-machine mirror must not be built from settings.json")
+}
+
+func TestOpen_OffMachineMirrorBuiltFromUntrackedLocalSettings(t *testing.T) {
+	registerFakeGatedBackends(t)
+	dir, repo, _ := newTestRepo(t)
+	t.Chdir(dir)
+	settings.ClearVersionedPathCache()
+	writeRawLocalSettings(t, dir, `{"checkpoints": {"primary": {"type": "git-branch"}, "mirrors": [{"type": "`+fakeOffMachineBackendType+`"}]}}`)
+
+	before := fakeOffMachineFactoryN.Load()
+	_, err := Open(context.Background(), repo, OpenOptions{})
+	require.NoError(t, err)
+	assert.Equal(t, before+1, fakeOffMachineFactoryN.Load(), "off-machine mirror should be built from an untracked settings.local.json")
 }
